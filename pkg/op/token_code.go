@@ -122,10 +122,20 @@ func AuthorizeCodeClient(ctx context.Context, tokenReq *oidc.AccessTokenRequest,
 	return request, client, err
 }
 
-// AuthRequestByCode returns the AuthRequest previously created from Storage corresponding to the auth code or an error
+// AuthRequestByCode returns the AuthRequest previously created from Storage corresponding to the auth code or an error.
+// If the storage implements CodeExchangeStorage, the code is consumed atomically with the lookup,
+// so that it cannot be redeemed again, regardless of whether the remaining token request validation succeeds.
 func AuthRequestByCode(ctx context.Context, storage Storage, code string) (AuthRequest, error) {
 	ctx, span := Tracer.Start(ctx, "AuthRequestByCode")
 	defer span.End()
+
+	if consumer, ok := storage.(CodeExchangeStorage); ok {
+		authReq, err := consumer.ConsumeAuthRequestCode(ctx, code)
+		if err != nil {
+			return nil, oidc.ErrInvalidGrant().WithDescription("invalid code").WithParent(err)
+		}
+		return authReq, nil
+	}
 
 	authReq, err := storage.AuthRequestByCode(ctx, code)
 	if err != nil {

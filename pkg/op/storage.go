@@ -69,6 +69,23 @@ type AuthStorage interface {
 	KeySet(context.Context) ([]Key, error)
 }
 
+// CodeExchangeStorage is an optional interface a Storage can implement to make
+// authorization code redemption single-use.
+//
+// ConsumeAuthRequestCode must load the auth request belonging to the code and
+// mark the code as consumed (or delete it) atomically, in a single transaction
+// together with the code, client and PKCE challenge state. The consumption must
+// not be rolled back when the rest of the token request (code_verifier, client
+// authentication, redirect_uri, ...) fails: a failed exchange permanently
+// invalidates the code. This prevents a code from being redeemed twice (also
+// concurrently) and prevents retries after a failed code_verifier or client check.
+//
+// Storages that do not implement this interface keep the legacy, non-atomic
+// behavior of AuthStorage.AuthRequestByCode.
+type CodeExchangeStorage interface {
+	ConsumeAuthRequestCode(ctx context.Context, code string) (AuthRequest, error)
+}
+
 // CanTerminateSessionFromRequest is an optional additional interface that may be implemented by
 // implementors of Storage as an alternative to TerminateSession of the AuthStorage.
 // It passes the complete parsed EndSessionRequest to the implementation, which allows access to additional data.

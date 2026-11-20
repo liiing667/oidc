@@ -31,6 +31,7 @@ var serviceKey1 = &rsa.PublicKey{
 var (
 	_ op.Storage                  = &Storage{}
 	_ op.ClientCredentialsStorage = &Storage{}
+	_ op.CodeExchangeStorage      = &Storage{}
 )
 
 // storage implements the op.Storage interface
@@ -221,6 +222,26 @@ func (s *Storage) AuthRequestByCode(ctx context.Context, code string) (op.AuthRe
 		return nil, fmt.Errorf("code invalid or expired")
 	}
 	return s.AuthRequestByID(ctx, requestID)
+}
+
+// ConsumeAuthRequestCode implements the op.CodeExchangeStorage interface.
+// It atomically (under the same lock guarding the codes and auth requests)
+// looks up the auth request for the code and consumes the code,
+// so that every code can be exchanged only once and a failed exchange
+// (wrong code_verifier, wrong client, ...) cannot be retried.
+func (s *Storage) ConsumeAuthRequestCode(ctx context.Context, code string) (op.AuthRequest, error) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	requestID, ok := s.codes[code]
+	if !ok {
+		return nil, fmt.Errorf("code invalid or expired")
+	}
+	delete(s.codes, code)
+	request, ok := s.authRequests[requestID]
+	if !ok {
+		return nil, fmt.Errorf("request not found")
+	}
+	return request, nil
 }
 
 // SaveAuthCode implements the op.Storage interface

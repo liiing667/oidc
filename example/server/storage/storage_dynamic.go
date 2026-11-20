@@ -63,6 +63,15 @@ func (s *multiStorage) AuthRequestByCode(ctx context.Context, code string) (op.A
 	return storage.AuthRequestByCode(ctx, code)
 }
 
+// ConsumeAuthRequestCode implements the op.CodeExchangeStorage interface
+func (s *multiStorage) ConsumeAuthRequestCode(ctx context.Context, code string) (op.AuthRequest, error) {
+	storage, err := s.storageFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return storage.ConsumeAuthRequestCode(ctx, code)
+}
+
 // SaveAuthCode implements the op.Storage interface
 // it will be called after the authentication has been successful and before redirecting the user agent to the redirect_uri
 // (in an authorization code flow)

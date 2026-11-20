@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -64,24 +65,31 @@ func TestClientAuthStorageErrors(t *testing.T) {
 	// One storage for all subtests, so that the RSA key is generated once.
 	s := storage.NewStorage(storage.NewUserStore(testIssuer))
 
-	// A valid code, so that the Provider's code flow reaches client authentication.
+	// A fresh valid code per request, so that the Provider's code flow reaches
+	// client authentication. Codes are single-use: a consumed code can never be
+	// exchanged again, so every request needs its own one.
 	ctx := op.ContextWithIssuer(context.Background(), testIssuer)
-	authReq, err := s.CreateAuthRequest(ctx, &oidc.AuthRequest{
-		ClientID:     "web",
-		RedirectURI:  "https://example.com",
-		Scopes:       oidc.SpaceDelimitedArray{oidc.ScopeOpenID},
-		ResponseType: oidc.ResponseTypeCode,
-	}, "id1")
-	require.NoError(t, err)
-	const code = "client-auth-storage-errors"
-	require.NoError(t, s.SaveAuthCode(ctx, authReq.GetID(), code))
-	require.NoError(t, s.AuthRequestDone(authReq.GetID()))
-
-	codeForm := url.Values{
-		"grant_type":   {string(oidc.GrantTypeCode)},
-		"code":         {code},
-		"redirect_uri": {"https://example.com"},
+	codeSeq := 0
+	newCodeForm := func(t *testing.T) url.Values {
+		t.Helper()
+		authReq, err := s.CreateAuthRequest(ctx, &oidc.AuthRequest{
+			ClientID:     "web",
+			RedirectURI:  "https://example.com",
+			Scopes:       oidc.SpaceDelimitedArray{oidc.ScopeOpenID},
+			ResponseType: oidc.ResponseTypeCode,
+		}, "id1")
+		require.NoError(t, err)
+		codeSeq++
+		code := fmt.Sprintf("client-auth-storage-errors-%d", codeSeq)
+		require.NoError(t, s.SaveAuthCode(ctx, authReq.GetID(), code))
+		require.NoError(t, s.AuthRequestDone(authReq.GetID()))
+		return url.Values{
+			"grant_type":   {string(oidc.GrantTypeCode)},
+			"code":         {code},
+			"redirect_uri": {"https://example.com"},
+		}
 	}
+
 	invalidClient := map[string]clientAuthAnswer{
 		"Provider":  {string(oidc.InvalidClient), http.StatusUnauthorized},
 		"op.Server": {string(oidc.InvalidClient), http.StatusBadRequest},
@@ -92,6 +100,8 @@ func TestClientAuthStorageErrors(t *testing.T) {
 		method   string
 		endpoint func(op.OpenIDProvider) *op.Endpoint
 		form     url.Values
+		// codeFlow generates a fresh authorization code form per request.
+		codeFlow bool
 		// basicAuth sends web:secret in the Authorization header,
 		// otherwise the form carries the client credentials.
 		basicAuth bool
@@ -111,7 +121,7 @@ func TestClientAuthStorageErrors(t *testing.T) {
 			name:      "token authorization_code client lookup",
 			method:    failGetClientByClientID,
 			endpoint:  op.OpenIDProvider.TokenEndpoint,
-			form:      codeForm,
+			codeFlow:  true,
 			basicAuth: true,
 			want:      invalidClient,
 		},
@@ -119,7 +129,7 @@ func TestClientAuthStorageErrors(t *testing.T) {
 			name:      "token authorization_code secret check",
 			method:    failAuthorizeClientIDSecret,
 			endpoint:  op.OpenIDProvider.TokenEndpoint,
-			form:      codeForm,
+			codeFlow:  true,
 			basicAuth: true,
 			want:      invalidClient,
 		},
@@ -206,7 +216,11 @@ func TestClientAuthStorageErrors(t *testing.T) {
 					}
 				}
 				t.Run(path.name+"/"+req.name+"/"+se.name, func(t *testing.T) {
-					r := httptest.NewRequest(http.MethodPost, req.endpoint(provider).Relative(), strings.NewReader(req.form.Encode()))
+					form := req.form
+					if req.codeFlow {
+						form = newCodeForm(t)
+					}
+					r := httptest.NewRequest(http.MethodPost, req.endpoint(provider).Relative(), strings.NewReader(form.Encode()))
 					r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 					if req.basicAuth {
 						r.SetBasicAuth("web", "secret")
