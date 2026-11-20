@@ -826,6 +826,128 @@ func TestValidateAuthReqRedirectURI(t *testing.T) {
 			},
 			true,
 		},
+		{
+			// An explicit default port names the same endpoint as the
+			// port-less URI and must not be rejected (RFC 3986, section 6.2.3).
+			"code flow https default port is equivalent",
+			args{
+				"https://registered.com:443/callback",
+				mock.NewClientWithConfig(t, []string{"https://registered.com/callback"}, op.ApplicationTypeWeb, nil, false),
+				oidc.ResponseTypeCode,
+			},
+			false,
+		},
+		{
+			"code flow http default port is equivalent (confidential dev-free code flow)",
+			args{
+				"http://registered.com:80/callback",
+				mock.NewClientWithConfig(t, []string{"http://registered.com/callback"}, op.ApplicationTypeWeb, nil, false),
+				oidc.ResponseTypeCode,
+			},
+			false,
+		},
+		{
+			"code flow non-default port does not match",
+			args{
+				"https://registered.com:8443/callback",
+				mock.NewClientWithConfig(t, []string{"https://registered.com/callback"}, op.ApplicationTypeWeb, nil, false),
+				oidc.ResponseTypeCode,
+			},
+			true,
+		},
+		{
+			// A trailing dot is an optional root label of the same DNS name,
+			// and host names are case-insensitive; the two URIs are the same.
+			"code flow trailing dot and host case are equivalent",
+			args{
+				"https://REGISTERED.COM./callback",
+				mock.NewClientWithConfig(t, []string{"https://registered.com/callback"}, op.ApplicationTypeWeb, nil, false),
+				oidc.ResponseTypeCode,
+			},
+			false,
+		},
+		{
+			"code flow dotted look-alike host does not match",
+			args{
+				"https://registered.com.evil.com/callback",
+				mock.NewClientWithConfig(t, []string{"https://registered.com/callback"}, op.ApplicationTypeWeb, nil, false),
+				oidc.ResponseTypeCode,
+			},
+			true,
+		},
+		{
+			// The same IPv6 address written in different textual forms must
+			// compare equal, including the default-port and long-form variants.
+			"code flow IPv6 equivalent textual forms match",
+			args{
+				"http://[0:0:0:0:0:0:0:1]:80/callback",
+				mock.NewClientWithConfig(t, []string{"http://[::1]/callback"}, op.ApplicationTypeNative, nil, false),
+				oidc.ResponseTypeCode,
+			},
+			false,
+		},
+		{
+			"code flow IPv4-mapped IPv6 matches IPv4 loopback registration",
+			args{
+				"http://[::ffff:127.0.0.1]:51004/callback",
+				mock.NewClientWithConfig(t, []string{"http://127.0.0.1/callback"}, op.ApplicationTypeNative, nil, false),
+				oidc.ResponseTypeCode,
+			},
+			false,
+		},
+		{
+			// A trailing dot must not hide a loopback URI from native
+			// loopback handling (RFC 8252, section 7.3).
+			"code flow native loopback with trailing dot ok",
+			args{
+				"http://localhost.:51004/callback",
+				mock.NewClientWithConfig(t, []string{"http://127.0.0.1/callback"}, op.ApplicationTypeNative, nil, false),
+				oidc.ResponseTypeCode,
+			},
+			false,
+		},
+		{
+			// Scheme is part of the security conclusion: an http request must
+			// never be accepted against an https loopback registration.
+			"code flow loopback scheme mismatch fails",
+			args{
+				"http://127.0.0.1:51004/callback",
+				mock.NewClientWithConfig(t, []string{"https://127.0.0.1/callback"}, op.ApplicationTypeNative, nil, false),
+				oidc.ResponseTypeCode,
+			},
+			true,
+		},
+		{
+			// Query is part of the registered URI; a differing query is a
+			// different URI even on the loopback interface.
+			"code flow loopback query mismatch fails",
+			args{
+				"http://127.0.0.1:51004/callback?b=2",
+				mock.NewClientWithConfig(t, []string{"http://127.0.0.1/callback?a=1"}, op.ApplicationTypeNative, nil, false),
+				oidc.ResponseTypeCode,
+			},
+			true,
+		},
+		{
+			"code flow loopback matching query across dynamic port ok",
+			args{
+				"http://127.0.0.1:51004/callback?a=1",
+				mock.NewClientWithConfig(t, []string{"http://127.0.0.1/callback?a=1"}, op.ApplicationTypeNative, nil, false),
+				oidc.ResponseTypeCode,
+			},
+			false,
+		},
+		{
+			// RFC 6749, section 3.1.2, forbids fragments in redirect URIs;
+			// canonical matching must not silently accept one.
+			"code flow fragment does not match fragment-less registration",
+			args{
+				"https://registered.com/callback#frag",
+				mock.NewClientWithConfig(t, []string{"https://registered.com/callback"}, op.ApplicationTypeWeb, nil, false),
+				oidc.ResponseTypeCode,
+			},
+			true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -899,6 +1021,31 @@ func TestLoopbackOrLocalhost(t *testing.T) {
 			"localhost with port ok",
 			args{url: "http://localhost:4200/test"},
 			true,
+		},
+		{
+			"localhost trailing dot ok",
+			args{url: "http://localhost./test"},
+			true,
+		},
+		{
+			"localhost upper case ok",
+			args{url: "http://LOCALHOST:4200/test"},
+			true,
+		},
+		{
+			"v4 trailing dot ok",
+			args{url: "http://127.0.0.1./test"},
+			true,
+		},
+		{
+			"v4-mapped v6 ok",
+			args{url: "http://[::ffff:127.0.0.1]/test"},
+			true,
+		},
+		{
+			"loopback-looking non-loopback v4 false",
+			args{url: "http://128.0.0.1/test"},
+			false,
 		},
 	}
 	for _, tt := range tests {

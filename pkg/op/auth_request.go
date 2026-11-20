@@ -329,8 +329,10 @@ func ValidateAuthReqScopes(client Client, scopes []string) ([]string, error) {
 // checkURIAgainstRedirects just checks against the valid redirect URIs and ignores
 // other factors.
 func checkURIAgainstRedirects(client Client, uri string) error {
-	if slices.Contains(client.RedirectURIs(), uri) {
-		return nil
+	for _, registered := range client.RedirectURIs() {
+		if redirectURIsEquivalent(uri, registered) {
+			return nil
+		}
 	}
 	if globClient, ok := client.(HasRedirectGlobs); ok {
 		for _, uriGlob := range globClient.RedirectURIGlobs() {
@@ -346,6 +348,88 @@ func checkURIAgainstRedirects(client Client, uri string) error {
 	return oidc.ErrInvalidRequestRedirectURI().
 		WithDescription("The requested redirect_uri is missing in the client configuration. " +
 			"If you have any questions, you may contact the administrator of the application.")
+}
+
+// canonicalRedirect is a normalized view of an http(s) redirect URI: the host
+// is canonicalized so that URIs identifying the same origin compare equal even
+// when their raw strings differ.
+type canonicalRedirect struct {
+	scheme   string
+	host     string
+	port     string
+	path     string
+	rawQuery string
+	fragment string
+	loopback bool
+}
+
+// canonicalizeRedirectURI parses rawURL and normalizes the host so that
+// equivalent URIs have an identical canonical form:
+//   - a DNS host is lower-cased and a single trailing dot is removed, so
+//     "Example.COM." and "example.com" denote the same host;
+//   - an IP host is parsed and rendered in its canonical textual form, so
+//     "[0:0::1]" and "[::1]", or "[::ffff:127.0.0.1]" and "127.0.0.1", compare
+//     equal;
+//   - the default port of the scheme is dropped, so "https://h:443" and
+//     "https://h" resolve to the same endpoint.
+//
+// An unparsable URI, or one without an http/https scheme, cannot be
+// canonicalized and ok is false; callers then keep relying on raw matching.
+func canonicalizeRedirectURI(rawURL string) (canonical canonicalRedirect, ok bool) {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		return canonicalRedirect{}, false
+	}
+	host := strings.TrimSuffix(parsedURL.Hostname(), ".")
+	loopback := false
+	if ip := net.ParseIP(host); ip != nil {
+		host = ip.String()
+		loopback = ip.IsLoopback()
+	} else {
+		host = strings.ToLower(host)
+		loopback = host == "localhost"
+	}
+	port := parsedURL.Port()
+	if (parsedURL.Scheme == "http" && port == "80") ||
+		(parsedURL.Scheme == "https" && port == "443") {
+		port = ""
+	}
+	return canonicalRedirect{
+		scheme:   parsedURL.Scheme,
+		host:     host,
+		port:     port,
+		path:     parsedURL.Path,
+		rawQuery: parsedURL.RawQuery,
+		fragment: parsedURL.Fragment,
+		loopback: loopback,
+	}, true
+}
+
+// redirectURIsEquivalent reports whether request and registered identify the
+// same redirect URI. Both are canonicalized first, so differences limited to
+// the default port, a trailing dot, host letter case, or an equivalent IPv6
+// textual form do not cause a false rejection.
+//
+// For a native loopback redirect the port is ignored (RFC 8252, section 7.3):
+// the application picks a free port at runtime. Any loopback host may stand in
+// for any other, because the client is expected to try both IP versions. The
+// scheme, path and query must still match exactly.
+func redirectURIsEquivalent(request, registered string) bool {
+	requestURL, requestOK := canonicalizeRedirectURI(request)
+	registeredURL, registeredOK := canonicalizeRedirectURI(registered)
+	if !requestOK || !registeredOK {
+		return request == registered
+	}
+	if requestURL.scheme != registeredURL.scheme ||
+		requestURL.path != registeredURL.path ||
+		requestURL.rawQuery != registeredURL.rawQuery ||
+		requestURL.fragment != registeredURL.fragment {
+		return false
+	}
+	if requestURL.loopback && registeredURL.loopback {
+		return true
+	}
+	return requestURL.host == registeredURL.host && requestURL.port == registeredURL.port
 }
 
 // ValidateAuthReqRedirectURI validates the passed redirect_uri and response_type to the registered uris and client type
@@ -412,7 +496,7 @@ func validateAuthReqRedirectURINative(client Client, uri string) error {
 func matchesLoopbackRedirect(client Client, uri *url.URL) bool {
 	for _, registered := range client.RedirectURIs() {
 		redirectURI, ok := HTTPLoopbackOrLocalhost(registered)
-		if ok && equalURI(uri, redirectURI) {
+		if ok && redirectURIsEquivalent(uri.String(), redirectURI.String()) {
 			return true
 		}
 	}
@@ -434,18 +518,14 @@ func redirectURIRegistered(client Client, uri string) bool {
 	return isLoopback && matchesLoopbackRedirect(client, parsedURL)
 }
 
-func equalURI(url1, url2 *url.URL) bool {
-	return url1.Path == url2.Path && url1.RawQuery == url2.RawQuery
-}
-
 func HTTPLoopbackOrLocalhost(rawURL string) (*url.URL, bool) {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, false
 	}
 	if parsedURL.Scheme == "http" || parsedURL.Scheme == "https" {
-		hostName := parsedURL.Hostname()
-		return parsedURL, hostName == "localhost" || net.ParseIP(hostName).IsLoopback()
+		hostName := strings.TrimSuffix(parsedURL.Hostname(), ".")
+		return parsedURL, strings.EqualFold(hostName, "localhost") || net.ParseIP(hostName).IsLoopback()
 	}
 	return nil, false
 }

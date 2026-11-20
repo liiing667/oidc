@@ -28,6 +28,29 @@ func TestValidateEndSessionPostLogoutRedirectURI(t *testing.T) {
 			wantErr:               false,
 		},
 		{
+			// The same equivalence rules as the authorization endpoint apply:
+			// default port, trailing dot and host case do not change the URI.
+			name:                  "equivalent URI family match (web)",
+			registered:            []string{"https://logged-out.example/cb"},
+			applicationType:       op.ApplicationTypeWeb,
+			postLogoutRedirectURI: "https://LOGGED-OUT.EXAMPLE.:443/cb",
+			wantErr:               false,
+		},
+		{
+			name:                  "equivalent IPv6 textual form match (web)",
+			registered:            []string{"http://[::1]:8080/cb"},
+			applicationType:       op.ApplicationTypeWeb,
+			postLogoutRedirectURI: "http://[0:0:0:0:0:0:0:1]:8080/cb",
+			wantErr:               false,
+		},
+		{
+			name:                  "web client cannot ignore the port on a non-loopback host",
+			registered:            []string{"https://logged-out.example/cb"},
+			applicationType:       op.ApplicationTypeWeb,
+			postLogoutRedirectURI: "https://logged-out.example:8443/cb",
+			wantErr:               true,
+		},
+		{
 			name:                  "no match",
 			registered:            []string{"https://logged-out"},
 			applicationType:       op.ApplicationTypeWeb,
@@ -105,14 +128,53 @@ func TestValidateEndSessionPostLogoutRedirectURI(t *testing.T) {
 			wantErr:               true,
 		},
 		{
-			// Matches the existing auth-side behavior: equalURI compares only
-			// path + raw query, so any registered loopback host is interchangeable
-			// with any incoming loopback host as long as the path matches.
+			// RFC 8252 §7.3 treats every loopback host as interchangeable, so a
+			// registered IPv4 loopback accepts an incoming IPv6 loopback as long
+			// as the scheme, path and query match (the port is ignored).
 			name:                  "native cross-loopback host ok (v4 registered, v6 request)",
 			registered:            []string{"http://127.0.0.1/callback"},
 			applicationType:       op.ApplicationTypeNative,
 			postLogoutRedirectURI: "http://[::1]:54321/callback",
 			wantErr:               false,
+		},
+		{
+			// Equivalent textual forms of the same URI family must reach the
+			// same conclusion as the authorization endpoint validation.
+			name:                  "native loopback IPv6 long form and default port ok",
+			registered:            []string{"http://[::1]/callback"},
+			applicationType:       op.ApplicationTypeNative,
+			postLogoutRedirectURI: "http://[0:0:0:0:0:0:0:1]:80/callback",
+			wantErr:               false,
+		},
+		{
+			name:                  "native loopback trailing dot ok",
+			registered:            []string{"http://127.0.0.1/callback"},
+			applicationType:       op.ApplicationTypeNative,
+			postLogoutRedirectURI: "http://localhost.:54321/callback",
+			wantErr:               false,
+		},
+		{
+			name:                  "native loopback https registration default port ok",
+			registered:            []string{"https://127.0.0.1/callback"},
+			applicationType:       op.ApplicationTypeNative,
+			postLogoutRedirectURI: "https://127.0.0.1:443/callback",
+			wantErr:               false,
+		},
+		{
+			// Scheme is part of the security conclusion: an http logout redirect
+			// must not be accepted against an https registration.
+			name:                  "native loopback scheme mismatch fails",
+			registered:            []string{"https://127.0.0.1/callback"},
+			applicationType:       op.ApplicationTypeNative,
+			postLogoutRedirectURI: "http://127.0.0.1:54321/callback",
+			wantErr:               true,
+		},
+		{
+			name:                  "native loopback query mismatch fails",
+			registered:            []string{"http://127.0.0.1/callback?a=1"},
+			applicationType:       op.ApplicationTypeNative,
+			postLogoutRedirectURI: "http://127.0.0.1:54321/callback?b=2",
+			wantErr:               true,
 		},
 		{
 			name:                  "glob match (HasRedirectGlobs)",
