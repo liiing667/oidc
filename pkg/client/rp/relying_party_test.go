@@ -481,8 +481,8 @@ func TestGenerateAndStoreCodeChallenge(t *testing.T) {
 		{
 			name:          "GenerateAndStoreCodeChallenge",
 			cookieHandler: httphelper.NewCookieHandler(key, key, httphelper.WithUnsecure()),
-			generate: func(_ *http.Request, w http.ResponseWriter, rp RelyingParty) (string, error) {
-				return GenerateAndStoreCodeChallenge(w, rp)
+			generate: func(r *http.Request, w http.ResponseWriter, rp RelyingParty) (string, error) {
+				return GenerateAndStoreCodeChallenge(r, w, rp)
 			},
 		},
 		{

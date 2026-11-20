@@ -5,6 +5,39 @@ All commands are executed from the root of the project that imports oidc package
 on non-GNU systems, such as MacOS.
 Alternatively, GNU sed can be installed on such systems. (`coreutils` package?).
 
+## Origin-bound RP cookies
+
+The relying-party state and PKCE cookies are now bound to the request origin
+(scheme and host). The cookie value embeds the origin of the request that set
+it, inside the authenticated and encrypted securecookie payload, and a cookie
+is only accepted again when the reading request has the same origin. Cookies
+are also issued as host-only cookies (no `Domain` attribute) and a request
+that contains more than one cookie with the same name is rejected.
+
+This blocks old sessions from being reused across hosts (e.g. a sibling host
+under a shared parent domain) or after an HTTPS-to-HTTP downgrade. Expiry
+continues to be enforced by the securecookie timestamp and the configured
+`MaxAge`.
+
+Signatures that now require the current request:
+
+```go
+// before
+cookieHandler.CreateCookie(name, value)
+cookieHandler.SetCookie(w, name, value)
+rp.GenerateAndStoreCodeChallenge(w, relyingParty)
+
+// after
+cookieHandler.CreateCookie(r, name, value)
+cookieHandler.SetCookie(r, w, name, value)
+rp.GenerateAndStoreCodeChallenge(r, w, relyingParty)
+```
+
+`http.WithDomain` is deprecated and becomes a no-op: an explicit cookie
+`Domain` would re-enable cross-host sending. Applications behind a TLS
+termination proxy should keep forwarding the standard `X-Forwarded-Proto`
+header so the request scheme is derived correctly.
+
 ## Global `slog` logger migration
 
 OIDC now logs through the global `log/slog` functions. Configure the process-wide default before constructing an OP or RP:

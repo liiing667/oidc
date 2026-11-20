@@ -483,7 +483,7 @@ func AuthURLHandler(stateFn func() string, rp RelyingParty, urlParam ...URLParam
 			if rp.CookieHandler().IsRequestAware() {
 				codeChallenge, err = GenerateAndStoreCodeChallengeWithRequest(r, w, rp)
 			} else {
-				codeChallenge, err = GenerateAndStoreCodeChallenge(w, rp)
+				codeChallenge, err = GenerateAndStoreCodeChallenge(r, w, rp)
 			}
 
 			if err != nil {
@@ -498,10 +498,10 @@ func AuthURLHandler(stateFn func() string, rp RelyingParty, urlParam ...URLParam
 }
 
 // GenerateAndStoreCodeChallenge generates a PKCE code challenge and stores its verifier into a secure cookie
-func GenerateAndStoreCodeChallenge(w http.ResponseWriter, rp RelyingParty) (string, error) {
+func GenerateAndStoreCodeChallenge(r *http.Request, w http.ResponseWriter, rp RelyingParty) (string, error) {
 	// 32 random octets, base64url-encoded, as recommended by RFC 7636, section 4.1.
 	codeVerifier := oauth2.GenerateVerifier()
-	if err := rp.CookieHandler().SetCookie(w, pkceCode, codeVerifier); err != nil {
+	if err := rp.CookieHandler().SetCookie(r, w, pkceCode, codeVerifier); err != nil {
 		return "", err
 	}
 	return oidc.NewSHACodeChallenge(codeVerifier), nil
@@ -708,7 +708,7 @@ func trySetStateCookie(r *http.Request, w http.ResponseWriter, state string, rp 
 		if rp.CookieHandler().IsRequestAware() {
 			err = rp.CookieHandler().SetRequestAwareCookie(r, w, stateParam, state)
 		} else {
-			err = rp.CookieHandler().SetCookie(w, stateParam, state)
+			err = rp.CookieHandler().SetCookie(r, w, stateParam, state)
 		}
 
 		if err != nil {
