@@ -64,8 +64,18 @@ type AuthStorage interface {
 	// with a token that is not a refresh token.
 	GetRefreshTokenInfo(ctx context.Context, clientID string, token string) (userID string, tokenID string, err error)
 
+	// SigningKey returns the current generation used to sign new tokens.
+	// Its ID must be unique per generation and present in the KeySet result.
+	// Never reuse a kid after rotating the key material: relying parties key
+	// their JWKS cache on the kid and would keep verifying against the old
+	// generation.
 	SigningKey(context.Context) (SigningKey, error)
 	SignatureAlgorithms(context.Context) ([]jose.SignatureAlgorithm, error)
+	// KeySet publishes the public keys for the /keys endpoint and signature
+	// verification. Keep the current signing generation plus the older
+	// generations for as long as tokens issued before the rotation must remain
+	// verifiable. Every kid must occur at most once. Implement [KeyGenerations]
+	// to let the provider validate this rotation contract before signing.
 	KeySet(context.Context) ([]Key, error)
 }
 

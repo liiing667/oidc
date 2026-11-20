@@ -23,6 +23,33 @@ OIDC package logging always uses the process-wide `slog` default. The exported `
 
 Remove uses of `logging.ToContext` and `github.com/zitadel/logging` middleware. Applications that need request logging or context enrichment should provide their own middleware and `slog.Handler`. Discovery debug records are now sent to the global logger without first checking for a context logger; use the global handler's level configuration to suppress them. RP records no longer receive the `rp` attribute group or its function-name enrichment.
 
+## Signing key rotation
+
+Signing identity, the published JWKS and signature verification now share one
+generation model. When rotating the OP signing key:
+
+- Give every generation a **unique `kid`**. Reusing a kid leaves relying
+  parties with an ambiguous JWKS and a stale cache that keeps selecting the old
+  generation. The verifier rejects a JWKS that contains the same kid more than
+  once with `oidc.ErrKeyDuplicateID`.
+- Keep the previous generation in `KeySet` for the whole verification window of
+  tokens that were already issued. Remove it only after those tokens expire.
+- The current `SigningKey` must always be part of `KeySet`, with the same alg.
+  A JWKS that lags behind the signing side makes new tokens unverifiable.
+- JWK entries with an explicit `alg` are now matched on the exact algorithm,
+  not only on the key type. An RS256 key no longer satisfies a PS256 token and
+  vice versa. Publish the alg that each generation actually signs with.
+
+Storage implementations can optionally implement `op.KeyGenerations`. The
+provider then validates the generation view while signing and fails fast with
+`op.ErrKeyGeneration` on a duplicate kid, a missing signing generation, or an
+alg mismatch. Storages that only implement `op.Storage` keep working unchanged.
+
+Relying parties using `rp.NewRemoteKeySet` no longer pin a failed cached key
+forever when the JWK advertises an explicit alg: a verification failure against
+an exact-kid cache entry now triggers a remote re-fetch, so a rotation that
+reuses the kid (still not recommended) can recover once the JWKS is updated.
+
 ## V2 to V3
 
 **TL;DR** at the [bottom](#full-script) of this chapter is a full `sed` script

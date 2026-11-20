@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rsa"
 	"errors"
+	"fmt"
 	"strings"
 
 	jose "github.com/go-jose/go-jose/v4"
@@ -18,6 +19,11 @@ const (
 var (
 	ErrKeyMultiple = errors.New("multiple possible keys match")
 	ErrKeyNone     = errors.New("no possible keys matches")
+	// ErrKeyDuplicateID is returned when a JWKS publishes more than one key
+	// with the same non-empty kid and use, which makes key selection ambiguous.
+	// It typically indicates that a signing key was rotated while reusing the
+	// old kid. Give every generation its own unique kid instead.
+	ErrKeyDuplicateID = errors.New("multiple keys with the same key id")
 )
 
 // KeySet represents a set of JSON Web Keys
@@ -61,6 +67,7 @@ func FindKey(keyID, use, expectedAlg string, keys ...jose.JSONWebKey) (jose.JSON
 // will return a specific error if none (ErrKeyNone) or multiple (ErrKeyMultiple) match
 func FindMatchingKey(keyID, use, expectedAlg string, keys ...jose.JSONWebKey) (key jose.JSONWebKey, err error) {
 	var validKeys []jose.JSONWebKey
+	var exactMatches []jose.JSONWebKey
 	for _, k := range keys {
 		// ignore all keys with wrong use (let empty use of published key pass)
 		if k.Use != use && k.Use != "" {
@@ -70,14 +77,33 @@ func FindMatchingKey(keyID, use, expectedAlg string, keys ...jose.JSONWebKey) (k
 		if !algToKeyType(k.Key, expectedAlg) {
 			continue
 		}
+		// A JWKS key that advertises an explicit alg must use the exact same
+		// alg as the JWT. Matching only on the key type would let an RS256 key
+		// be selected for a PS256 token, or an old generation be chosen after
+		// an alg change. Keys without an advertised alg keep the legacy
+		// type-only behavior.
+		if k.Algorithm != "" && k.Algorithm != expectedAlg {
+			continue
+		}
 		// if we get here, use and alg match, so an equal (not empty) keyID is an exact match
 		if k.KeyID == keyID && keyID != "" {
-			return k, nil
+			exactMatches = append(exactMatches, k)
+			continue
 		}
 		// keyIDs did not match or at least one was empty (if later, then it could be a match)
 		if k.KeyID == "" || keyID == "" {
 			validKeys = append(validKeys, k)
 		}
+	}
+	// Exact kid matches win over empty-kid candidates.
+	if len(exactMatches) == 1 {
+		return exactMatches[0], nil
+	}
+	if len(exactMatches) > 1 {
+		// Multiple keys share the same kid and are compatible with the JWT
+		// alg. The JWKS is ambiguous, which usually means a kid was reused
+		// across generations. Reject instead of picking one arbitrarily.
+		return key, fmt.Errorf("%w: %q", ErrKeyDuplicateID, keyID)
 	}
 	// if we get here, no match was possible at all (use / alg) or no exact match due to
 	// the signed JWT and / or the published keys didn't have a kid

@@ -2,9 +2,12 @@ package rp
 
 import (
 	"context"
+	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -136,4 +139,69 @@ func TestRemoteKeySet_VerifySignature_WrapsFetchError(t *testing.T) {
 			assert.ErrorIs(t, err, tt.wantErr)
 		})
 	}
+}
+
+func TestRemoteKeySet_RefetchesOnReusedKid(t *testing.T) {
+	// Two generations that intentionally share the same kid. The relying party
+	// first caches the old generation; after rotation the JWKS endpoint serves
+	// only the new generation. Verification must re-fetch instead of failing on
+	// the stale cache entry, because both JWKs advertise an explicit alg.
+	oldKey, newKey := mustRSAKey(t, 2048), mustRSAKey(t, 2048)
+
+	sign := func(key *rsa.PrivateKey) *jose.JSONWebSignature {
+		signer, err := jose.NewSigner(jose.SigningKey{
+			Algorithm: jose.RS256,
+			Key:       &jose.JSONWebKey{Key: key, KeyID: "shared-kid", Algorithm: string(jose.RS256)},
+		}, nil)
+		require.NoError(t, err)
+		object, err := signer.Sign([]byte(`{"sub":"subject"}`))
+		require.NoError(t, err)
+		compact, err := object.CompactSerialize()
+		require.NoError(t, err)
+		jws, err := jose.ParseSignedCompact(compact, []jose.SignatureAlgorithm{jose.RS256})
+		require.NoError(t, err)
+		return jws
+	}
+
+	jwksBody := func(key *rsa.PrivateKey) string {
+		jwk := jose.JSONWebKey{
+			Key:       &key.PublicKey,
+			KeyID:     "shared-kid",
+			Algorithm: string(jose.RS256),
+			Use:       oidc.KeyUseSignature,
+		}
+		body, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}})
+		require.NoError(t, err)
+		return string(body)
+	}
+
+	var currentBody string
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(currentBody)),
+			Request:    &http.Request{URL: mustParseURL(t, "https://example.com/keys")},
+		}, nil
+	})
+
+	keySet := NewRemoteKeySet(&http.Client{Transport: transport}, "https://example.com/keys")
+
+	// Prime the cache with generation 1.
+	currentBody = jwksBody(oldKey)
+	_, err := keySet.VerifySignature(context.Background(), sign(oldKey))
+	require.NoError(t, err)
+
+	// Rotate to generation 2 while reusing the kid and update the endpoint.
+	currentBody = jwksBody(newKey)
+	payload, err := keySet.VerifySignature(context.Background(), sign(newKey))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"sub":"subject"}`, string(payload))
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	require.NoError(t, err)
+	return parsed
 }

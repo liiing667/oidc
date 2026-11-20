@@ -178,7 +178,7 @@ func CreateJWT(ctx context.Context, issuer string, tokenRequest TokenRequest, ex
 	if actorReq, ok := tokenRequest.(TokenActorRequest); ok {
 		claims.Actor = actorReq.GetActor()
 	}
-	signingKey, err := storage.SigningKey(ctx)
+	signingKey, err := signingKeyFromStorage(ctx, storage)
 	if err != nil {
 		return "", err
 	}
@@ -214,7 +214,7 @@ func CreateIDToken(ctx context.Context, issuer string, request IDTokenRequest, v
 	}
 
 	scopes := client.RestrictAdditionalIdTokenScopes()(request.GetScopes())
-	signingKey, err := storage.SigningKey(ctx)
+	signingKey, err := signingKeyFromStorage(ctx, storage)
 	if err != nil {
 		return "", err
 	}

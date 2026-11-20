@@ -110,6 +110,10 @@ func (r *remoteKeySet) VerifySignature(ctx context.Context, jws *jose.JSONWebSig
 // - both kid are empty and skipRemoteCheck is set to true
 // - or both (JWT and JWK) kid are equal
 //
+// An exception is made for JWKs that advertise an explicit alg: a failed
+// verification then falls back to a remote fetch, because the kid may have
+// been reused for a rotated key generation and the cache can hold the old one.
+//
 // otherwise it will return no error (so remote keys will be loaded)
 func (r *remoteKeySet) verifySignatureCached(jws *jose.JSONWebSignature, keyID, alg string) ([]byte, error) {
 	keys := r.keysFromCache()
@@ -127,6 +131,12 @@ func (r *remoteKeySet) verifySignatureCached(jws *jose.JSONWebSignature, keyID, 
 	}
 	if !r.exactMatch(key.KeyID, keyID) {
 		// no exact key match, try getting better match with remote keys
+		return nil, nil
+	}
+	if key.Algorithm != "" {
+		// The cached JWK pins a specific alg but verification failed. The kid
+		// may be reused by a new generation, so re-fetch the JWKS instead of
+		// failing permanently against the stale cached key.
 		return nil, nil
 	}
 	return nil, fmt.Errorf("signature verification failed: %w", err)

@@ -2,6 +2,7 @@ package op
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	jose "github.com/go-jose/go-jose/v4"
@@ -43,4 +44,22 @@ func jsonWebKeySet(keys []Key) *jose.JSONWebKeySet {
 		}
 	}
 	return &jose.JSONWebKeySet{Keys: webKeys}
+}
+
+// JSONWebKeySet converts the OP [Key] list into a [jose.JSONWebKeySet].
+// It uses exactly the same mapping as the /keys endpoint, so callers can
+// rely on the same kid, alg and use values that are published to relying
+// parties.
+func JSONWebKeySet(keys []Key) *jose.JSONWebKeySet {
+	return jsonWebKeySet(keys)
+}
+
+// KeysJSON serializes the OP [Key] list into the JSON document that the
+// /keys endpoint publishes as a JWKS.
+func KeysJSON(keys []Key) string {
+	body, err := json.Marshal(jsonWebKeySet(keys))
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
 }
