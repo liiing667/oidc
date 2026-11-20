@@ -163,6 +163,14 @@ type clientData struct {
 // In absence of basic auth data, the unauthenticated client id from the form
 // data is returned.
 //
+// The client MUST NOT use more than one authentication method in each request:
+// https://datatracker.ietf.org/doc/html/rfc6749#section-2.3
+// A request carrying a client_assertion together with a basic auth header is
+// rejected. If the request carries a client_id in the form data next to
+// authenticated credentials, both must identify the same client, so the
+// authenticated client is always the same entity as the client the request
+// was made for.
+//
 // If no client id can be obtained by any method, oidc.ErrInvalidClient
 // is returned with ErrMissingClientID wrapped in it.
 func ClientIDFromRequest(r *http.Request, p ClientProvider) (clientID string, authenticated bool, err error) {
@@ -180,23 +188,42 @@ func ClientIDFromRequest(r *http.Request, p ClientProvider) (clientID string, au
 		return "", false, err
 	}
 
-	JWTProfile, ok := p.(ClientJWTProfile)
-	if ok && data.ClientAssertion != "" {
-		// if JWTProfile is supported and client sent an assertion, check it and use it as response
-		// regardless if it succeeded or failed
+	_, _, hasBasicAuth := r.BasicAuth()
+	if data.ClientAssertion != "" {
+		// https://datatracker.ietf.org/doc/html/rfc6749#section-2.3
+		// The client MUST NOT use more than one authentication method in each request.
+		if hasBasicAuth {
+			return "", false, oidc.ErrInvalidRequest().WithDescription("client authentication must not use more than one method")
+		}
+		// A client_assertion must never be ignored:
+		// if JWTProfile is not supported the request has to fail.
+		JWTProfile, ok := p.(ClientJWTProfile)
+		if !ok {
+			return "", false, oidc.ErrInvalidClient().WithDescription("client_assertion not supported")
+		}
 		clientID, err = ClientJWTAuth(r.Context(), data.ClientAssertionParams, JWTProfile)
-		return clientID, err == nil, err
-	}
-	// try basic auth
-	clientID, err = ClientBasicAuth(r, p.Storage())
-	// if that succeeded, use it
-	if err == nil {
+		if err != nil {
+			return "", false, err
+		}
+		// The authenticated client must be the same entity as the
+		// client_id sent in the form data, if any.
+		if data.ClientID != "" && data.ClientID != clientID {
+			return "", false, oidc.ErrInvalidClient().WithDescription("client_id does not match client_assertion")
+		}
 		return clientID, true, nil
 	}
-	// if the client did not send a Basic Auth Header, ignore the `ErrNoClientCredentials`
-	// but return other errors immediately
-	if !errors.Is(err, ErrNoClientCredentials) {
-		return "", false, err
+
+	if hasBasicAuth {
+		clientID, err = ClientBasicAuth(r, p.Storage())
+		if err != nil {
+			return "", false, err
+		}
+		// The authenticated client must be the same entity as the
+		// client_id sent in the form data, if any.
+		if data.ClientID != "" && data.ClientID != clientID {
+			return "", false, oidc.ErrInvalidClient().WithDescription("client_id does not match basic auth credentials")
+		}
+		return clientID, true, nil
 	}
 
 	// if the client did not authenticate (public clients) it must at least send a client_id

@@ -255,7 +255,19 @@ func (p testClientProvider) Storage() op.Storage {
 	return p.storage
 }
 
+// testClientJWTProvider implements op.ClientProvider and op.ClientJWTProfile,
+// verifying JWT assertions with the testutil key storage.
+type testClientJWTProvider struct {
+	testClientProvider
+}
+
+func (testClientJWTProvider) JWTProfileVerifier(context.Context) *op.JWTProfileVerifier {
+	return op.NewJWTProfileVerifier(tu.JWTProfileKeyStorage{}, tu.ValidIssuer, time.Minute, 0)
+}
+
 func TestClientIDFromRequest(t *testing.T) {
+	assertion, _ := tu.ValidJWTProfileAssertion()
+	wrongAudienceAssertion, _ := tu.NewJWTProfileAssertion(tu.ValidClientID, tu.ValidClientID, []string{"other"}, time.Now(), tu.ValidExpiration)
 	type args struct {
 		body io.Reader
 		p    op.ClientProvider
@@ -295,6 +307,114 @@ func TestClientIDFromRequest(t *testing.T) {
 			wantAuthenticated: false,
 		},
 		{
+			name: "jwt assertion",
+			args: args{
+				body: strings.NewReader(
+					url.Values{
+						"client_assertion":      []string{assertion},
+						"client_assertion_type": []string{oidc.ClientAssertionTypeJWTAssertion},
+					}.Encode(),
+				),
+				p: testClientJWTProvider{
+					testClientProvider{
+						storage: mock.NewStorage(t),
+					},
+				},
+			},
+			wantClientID:      tu.ValidClientID,
+			wantAuthenticated: true,
+		},
+		{
+			name: "jwt assertion with matching client_id",
+			args: args{
+				body: strings.NewReader(
+					url.Values{
+						"client_id":             []string{tu.ValidClientID},
+						"client_assertion":      []string{assertion},
+						"client_assertion_type": []string{oidc.ClientAssertionTypeJWTAssertion},
+					}.Encode(),
+				),
+				p: testClientJWTProvider{
+					testClientProvider{
+						storage: mock.NewStorage(t),
+					},
+				},
+			},
+			wantClientID:      tu.ValidClientID,
+			wantAuthenticated: true,
+		},
+		{
+			name: "jwt assertion with different client_id",
+			args: args{
+				body: strings.NewReader(
+					url.Values{
+						"client_id":             []string{"foo"},
+						"client_assertion":      []string{assertion},
+						"client_assertion_type": []string{oidc.ClientAssertionTypeJWTAssertion},
+					}.Encode(),
+				),
+				p: testClientJWTProvider{
+					testClientProvider{
+						storage: mock.NewStorage(t),
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "jwt assertion and basic auth",
+			args: args{
+				body: strings.NewReader(
+					url.Values{
+						"client_assertion":      []string{assertion},
+						"client_assertion_type": []string{oidc.ClientAssertionTypeJWTAssertion},
+					}.Encode(),
+				),
+				p: testClientJWTProvider{
+					testClientProvider{
+						storage: mock.NewStorage(t),
+					},
+				},
+			},
+			basicAuth: &basicAuth{
+				username: "foo",
+				password: "bar",
+			},
+			wantErr: true,
+		},
+		{
+			name: "jwt assertion wrong audience",
+			args: args{
+				body: strings.NewReader(
+					url.Values{
+						"client_assertion":      []string{wrongAudienceAssertion},
+						"client_assertion_type": []string{oidc.ClientAssertionTypeJWTAssertion},
+					}.Encode(),
+				),
+				p: testClientJWTProvider{
+					testClientProvider{
+						storage: mock.NewStorage(t),
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "jwt assertion not supported",
+			args: args{
+				body: strings.NewReader(
+					url.Values{
+						"client_assertion":      []string{assertion},
+						"client_assertion_type": []string{oidc.ClientAssertionTypeJWTAssertion},
+					}.Encode(),
+				),
+				p: testClientProvider{
+					storage: mock.NewStorage(t),
+				},
+			},
+			wantErr: true,
+		},
+		{
 			name: "authenticated",
 			args: args{
 				body: strings.NewReader(
@@ -314,6 +434,51 @@ func TestClientIDFromRequest(t *testing.T) {
 			},
 			wantClientID:      "foo",
 			wantAuthenticated: true,
+		},
+		{
+			name: "authenticated with matching client_id",
+			args: args{
+				body: strings.NewReader(
+					url.Values{
+						"client_id": []string{"foo"},
+					}.Encode(),
+				),
+				p: testClientProvider{
+					storage: func() op.Storage {
+						s := mock.NewMockStorage(gomock.NewController(t))
+						s.EXPECT().AuthorizeClientIDSecret(gomock.Any(), "foo", "bar").Return(nil)
+						return s
+					}(),
+				},
+			},
+			basicAuth: &basicAuth{
+				username: "foo",
+				password: "bar",
+			},
+			wantClientID:      "foo",
+			wantAuthenticated: true,
+		},
+		{
+			name: "authenticated with different client_id",
+			args: args{
+				body: strings.NewReader(
+					url.Values{
+						"client_id": []string{"other"},
+					}.Encode(),
+				),
+				p: testClientProvider{
+					storage: func() op.Storage {
+						s := mock.NewMockStorage(gomock.NewController(t))
+						s.EXPECT().AuthorizeClientIDSecret(gomock.Any(), "foo", "bar").Return(nil)
+						return s
+					}(),
+				},
+			},
+			basicAuth: &basicAuth{
+				username: "foo",
+				password: "bar",
+			},
+			wantErr: true,
 		},
 		{
 			name: "missing client id",
