@@ -2,6 +2,9 @@ package op_test
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -10,6 +13,7 @@ import (
 	"reflect"
 	"testing"
 
+	jose "github.com/go-jose/go-jose/v4"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -221,6 +225,224 @@ func TestAuthorizeCustomValidatorCodeChallengeMethod(t *testing.T) {
 			body, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
 			assert.Contains(t, string(body), "code_challenge_method is not supported")
+		})
+	}
+}
+
+// signRequestObject returns a compact JWS of the request object, signed with
+// the testutil key, or with a throwaway key when otherKey is true.
+func signRequestObject(t *testing.T, object *oidc.RequestObject, otherKey bool) string {
+	t.Helper()
+	payload, err := json.Marshal(object)
+	require.NoError(t, err)
+	signer := tu.Signer
+	if otherKey {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		signer, err = jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key}, nil)
+		require.NoError(t, err)
+	}
+	jws, err := signer.Sign(payload)
+	require.NoError(t, err)
+	token, err := jws.CompactSerialize()
+	require.NoError(t, err)
+	return token
+}
+
+func TestParseRequestObject(t *testing.T) {
+	const (
+		clientID = "client"
+		opIssuer = "https://op.example.com"
+	)
+	validObject := func() *oidc.RequestObject {
+		return &oidc.RequestObject{
+			Issuer:   clientID,
+			Audience: oidc.Audience{opIssuer},
+			AuthRequest: oidc.AuthRequest{
+				ClientID:     clientID,
+				ResponseType: oidc.ResponseTypeCode,
+				Scopes:       []string{oidc.ScopeOpenID, "profile"},
+				RedirectURI:  "https://client.example.com/callback",
+				State:        "object-state",
+				Nonce:        "object-nonce",
+			},
+		}
+	}
+	queryRequest := func() *oidc.AuthRequest {
+		return &oidc.AuthRequest{
+			ClientID:     clientID,
+			ResponseType: oidc.ResponseTypeCode,
+			Scopes:       []string{oidc.ScopeOpenID},
+			State:        "query-state",
+		}
+	}
+
+	tests := []struct {
+		name        string
+		object      func() *oidc.RequestObject
+		token       string
+		otherKey    bool
+		authReq     func() *oidc.AuthRequest
+		wantErr     string
+		wantErrType string
+		want        func(t *testing.T, authReq *oidc.AuthRequest)
+	}{
+		{
+			name:    "valid object takes precedence over query",
+			object:  validObject,
+			authReq: queryRequest,
+			want: func(t *testing.T, authReq *oidc.AuthRequest) {
+				assert.Equal(t, clientID, authReq.ClientID)
+				assert.Equal(t, oidc.ResponseTypeCode, authReq.ResponseType)
+				assert.Equal(t, []string{oidc.ScopeOpenID, "profile"}, []string(authReq.Scopes))
+				assert.Equal(t, "https://client.example.com/callback", authReq.RedirectURI)
+				assert.Equal(t, "object-state", authReq.State)
+				assert.Equal(t, "object-nonce", authReq.Nonce)
+				assert.Empty(t, authReq.RequestParam)
+			},
+		},
+		{
+			name:   "valid object attributes the client from the object",
+			object: validObject,
+			authReq: func() *oidc.AuthRequest {
+				authReq := queryRequest()
+				authReq.ClientID = ""
+				return authReq
+			},
+			want: func(t *testing.T, authReq *oidc.AuthRequest) {
+				assert.Equal(t, clientID, authReq.ClientID)
+			},
+		},
+		{
+			name: "valid object without response_type keeps the query value",
+			object: func() *oidc.RequestObject {
+				object := validObject()
+				object.ResponseType = ""
+				return object
+			},
+			authReq: queryRequest,
+			want: func(t *testing.T, authReq *oidc.AuthRequest) {
+				assert.Equal(t, oidc.ResponseTypeCode, authReq.ResponseType)
+			},
+		},
+		{
+			name:   "client_id conflict between query and object",
+			object: validObject,
+			authReq: func() *oidc.AuthRequest {
+				authReq := queryRequest()
+				authReq.ClientID = "other"
+				return authReq
+			},
+			wantErr:     "client id in request does not match request object",
+			wantErrType: "invalid_request",
+		},
+		{
+			name:   "response_type conflict between query and object",
+			object: validObject,
+			authReq: func() *oidc.AuthRequest {
+				authReq := queryRequest()
+				authReq.ResponseType = oidc.ResponseTypeIDToken
+				return authReq
+			},
+			wantErr:     "response type in request does not match request object",
+			wantErrType: "invalid_request",
+		},
+		{
+			name: "missing issuer in object",
+			object: func() *oidc.RequestObject {
+				object := validObject()
+				object.Issuer = ""
+				return object
+			},
+			authReq:     queryRequest,
+			wantErr:     "missing issuer in request object",
+			wantErrType: "invalid_request",
+		},
+		{
+			name: "missing client_id in object",
+			object: func() *oidc.RequestObject {
+				object := validObject()
+				object.ClientID = ""
+				return object
+			},
+			authReq:     queryRequest,
+			wantErr:     "missing client id in request object",
+			wantErrType: "invalid_request",
+		},
+		{
+			name: "issuer does not match client_id",
+			object: func() *oidc.RequestObject {
+				object := validObject()
+				object.Issuer = "other"
+				return object
+			},
+			authReq:     queryRequest,
+			wantErr:     "issuer does not match client id in request object",
+			wantErrType: "invalid_request",
+		},
+		{
+			name: "issuer missing in audience",
+			object: func() *oidc.RequestObject {
+				object := validObject()
+				object.Audience = oidc.Audience{"https://other.example.com"}
+				return object
+			},
+			authReq:     queryRequest,
+			wantErr:     "issuer missing in audience",
+			wantErrType: "invalid_request",
+		},
+		{
+			name: "missing audience",
+			object: func() *oidc.RequestObject {
+				object := validObject()
+				object.Audience = nil
+				return object
+			},
+			authReq:     queryRequest,
+			wantErr:     "issuer missing in audience",
+			wantErrType: "invalid_request",
+		},
+		{
+			name:        "invalid signature",
+			object:      validObject,
+			otherKey:    true,
+			authReq:     queryRequest,
+			wantErr:     "invalid request signature",
+			wantErrType: "invalid_request",
+		},
+		{
+			name:    "malformed token",
+			token:   "not.a.token",
+			authReq: queryRequest,
+			wantErr: "malformed jwt payload",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authReq := tt.authReq()
+			authReq.RequestParam = tt.token
+			if tt.object != nil {
+				authReq.RequestParam = signRequestObject(t, tt.object(), tt.otherKey)
+			}
+
+			storage := mock.NewMockStorage(gomock.NewController(t))
+			// Only cases reaching signature verification may look up keys;
+			// gomock fails the test on any earlier, unexpected lookup.
+			if tt.wantErr == "" || tt.wantErr == "invalid request signature" {
+				public := tu.WebKey.Public()
+				storage.EXPECT().GetKeyByIDAndClientID(gomock.Any(), gomock.Any(), clientID).
+					Return(&public, nil)
+			}
+
+			err := op.ParseRequestObject(context.Background(), authReq, storage, opIssuer)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assertErrorType(t, err, tt.wantErrType)
+				return
+			}
+			require.NoError(t, err)
+			tt.want(t, authReq)
 		})
 	}
 }

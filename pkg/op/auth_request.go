@@ -185,14 +185,26 @@ func ParseRequestObject(ctx context.Context, authReq *oidc.AuthRequest, storage 
 		return err
 	}
 
-	if requestObject.ClientID != "" && requestObject.ClientID != authReq.ClientID {
-		return oidc.ErrInvalidRequest().WithDescription("missing or wrong client id in request")
+	// The request object must be attributable to a single client: its issuer
+	// selects the keys the signature is verified against, so it must be set
+	// and match the object's client_id.
+	if requestObject.Issuer == "" {
+		return oidc.ErrInvalidRequest().WithDescription("missing issuer in request object")
 	}
-	if requestObject.ResponseType != "" && requestObject.ResponseType != authReq.ResponseType {
-		return oidc.ErrInvalidRequest().WithDescription("missing or wrong response type in request")
+	if requestObject.ClientID == "" {
+		return oidc.ErrInvalidRequest().WithDescription("missing client id in request object")
 	}
 	if requestObject.Issuer != requestObject.ClientID {
-		return oidc.ErrInvalidRequest().WithDescription("missing or wrong issuer in request")
+		return oidc.ErrInvalidRequest().WithDescription("issuer does not match client id in request object")
+	}
+	// Parameters sent both in the query and the signed request object must
+	// not conflict. Once the object is validated, its values take precedence
+	// over the query (see CopyRequestObjectToAuthRequest).
+	if authReq.ClientID != "" && authReq.ClientID != requestObject.ClientID {
+		return oidc.ErrInvalidRequest().WithDescription("client id in request does not match request object")
+	}
+	if authReq.ResponseType != "" && requestObject.ResponseType != "" && authReq.ResponseType != requestObject.ResponseType {
+		return oidc.ErrInvalidRequest().WithDescription("response type in request does not match request object")
 	}
 	if !slices.Contains(requestObject.Audience, issuer) {
 		return oidc.ErrInvalidRequest().WithDescription("issuer missing in audience")
@@ -208,6 +220,13 @@ func ParseRequestObject(ctx context.Context, authReq *oidc.AuthRequest, storage 
 // CopyRequestObjectToAuthRequest overwrites present values from the Request Object into the auth request
 // and clears the `RequestParam` of the auth request
 func CopyRequestObjectToAuthRequest(authReq *oidc.AuthRequest, requestObject *oidc.RequestObject) {
+	// The signed object determines the client the request belongs to. It was
+	// validated to carry a client_id matching its issuer and, if the query
+	// carried one, the query's client_id.
+	authReq.ClientID = requestObject.ClientID
+	if requestObject.ResponseType != "" {
+		authReq.ResponseType = requestObject.ResponseType
+	}
 	if slices.Contains(authReq.Scopes, oidc.ScopeOpenID) && len(requestObject.Scopes) > 0 {
 		authReq.Scopes = requestObject.Scopes
 	}
