@@ -280,6 +280,9 @@ func (s *LegacyServer) RefreshToken(ctx context.Context, r *ClientRequest[oidc.R
 	if err = ValidateRefreshTokenScopes(r.Data.Scopes, request); err != nil {
 		return nil, err
 	}
+	if err = ValidateRefreshTokenExpiration(request, r.Client.ClockSkew()); err != nil {
+		return nil, err
+	}
 	resp, err := CreateTokenResponse(ctx, request, r.Client, s.provider, true, "", r.Data.RefreshToken)
 	if err != nil {
 		return nil, err

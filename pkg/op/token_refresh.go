@@ -21,6 +21,16 @@ type RefreshTokenRequest interface {
 	SetCurrentScopes(scopes []string)
 }
 
+// RefreshTokenRequestExpiration is an optional interface that a
+// RefreshTokenRequest can implement to expose the expiration time of the
+// refresh token. When implemented, an expired refresh token is rejected during
+// the refresh_token grant validation, instead of relying on the Storage alone.
+// Requests that do not implement this interface keep their previous behavior,
+// so existing Storage implementations remain fully compatible.
+type RefreshTokenRequestExpiration interface {
+	GetRefreshTokenExpiration() time.Time
+}
+
 // RefreshTokenExchange handles the OAuth 2.0 refresh_token grant, including
 // parsing, validating, authorizing the client and finally exchanging the refresh_token for new tokens
 func RefreshTokenExchange(w http.ResponseWriter, r *http.Request, exchanger Exchanger) {
@@ -75,6 +85,9 @@ func ValidateRefreshTokenRequest(ctx context.Context, tokenReq *oidc.RefreshToke
 	if err = ValidateRefreshTokenScopes(tokenReq.Scopes, request); err != nil {
 		return nil, nil, err
 	}
+	if err = ValidateRefreshTokenExpiration(request, client.ClockSkew()); err != nil {
+		return nil, nil, err
+	}
 	return request, client, nil
 }
 
@@ -91,6 +104,23 @@ func ValidateRefreshTokenScopes(requestedScopes []string, authRequest RefreshTok
 		}
 	}
 	authRequest.SetCurrentScopes(requestedScopes)
+	return nil
+}
+
+// ValidateRefreshTokenExpiration rejects the refresh token when its
+// expiration time has passed. The client's clock skew is taken into account,
+// consistent with the validation of other issued tokens. A request that does
+// not implement RefreshTokenRequestExpiration is accepted without an
+// additional check, preserving backward compatibility.
+func ValidateRefreshTokenExpiration(request RefreshTokenRequest, clockSkew time.Duration) error {
+	expiringRequest, ok := request.(RefreshTokenRequestExpiration)
+	if !ok {
+		return nil
+	}
+	if expiration := expiringRequest.GetRefreshTokenExpiration(); !expiration.IsZero() &&
+		expiration.Add(clockSkew).Before(time.Now().UTC()) {
+		return oidc.ErrInvalidGrant().WithDescription("refresh token expired")
+	}
 	return nil
 }
 
