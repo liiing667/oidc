@@ -263,6 +263,94 @@ func TestIssuerFromHost(t *testing.T) {
 	}
 }
 
+func TestIssuerFromPath(t *testing.T) {
+	type args struct {
+		prefix        string
+		allowInsecure bool
+		target        string
+		tenant        string
+	}
+	tests := []struct {
+		name string
+		args args
+		want string
+	}{
+		{
+			name: "empty tenant, secure",
+			args: args{prefix: "/oauth", target: "https://op.example.com/oauth"},
+			want: "https://op.example.com/oauth",
+		},
+		{
+			name: "tenant, secure",
+			args: args{prefix: "/oauth", target: "https://op.example.com/oauth/p1", tenant: "p1"},
+			want: "https://op.example.com/oauth/p1",
+		},
+		{
+			name: "tenant, insecure",
+			args: args{prefix: "/oauth", allowInsecure: true, target: "http://op.example.com/oauth/p1", tenant: "p1"},
+			want: "http://op.example.com/oauth/p1",
+		},
+		{
+			name: "prefix without leading slash",
+			args: args{prefix: "oauth", target: "https://op.example.com/oauth/p1", tenant: "p1"},
+			want: "https://op.example.com/oauth/p1",
+		},
+		{
+			name: "prefix with trailing slash",
+			args: args{prefix: "/oauth/", target: "https://op.example.com/oauth/p1", tenant: "p1"},
+			want: "https://op.example.com/oauth/p1",
+		},
+		{
+			name: "root prefix, empty tenant",
+			args: args{prefix: "/", target: "https://op.example.com/"},
+			want: "https://op.example.com",
+		},
+		{
+			name: "root prefix, tenant",
+			args: args{prefix: "", target: "https://op.example.com/p1", tenant: "p1"},
+			want: "https://op.example.com/p1",
+		},
+		{
+			name: "request port is kept",
+			args: args{prefix: "/oauth", target: "https://op.example.com:9998/oauth/p1", tenant: "p1"},
+			want: "https://op.example.com:9998/oauth/p1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issuer, err := IssuerFromPath(tt.args.prefix)(tt.args.allowInsecure)
+			require.NoError(t, err)
+			req := httptest.NewRequest(http.MethodGet, tt.args.target, nil)
+			if tt.args.tenant != "" {
+				req = req.WithContext(ContextWithTenant(req.Context(), tt.args.tenant))
+			}
+			assert.Equal(t, tt.want, issuer(req))
+		})
+	}
+}
+
+func TestIssuerFromPath_keepsHostTenantAndOrigin(t *testing.T) {
+	issuer, err := IssuerFromPath("/oauth")(false)
+	require.NoError(t, err)
+
+	// A tenant switch must change the issuer, so metadata built from it
+	// cannot name another tenant's endpoints.
+	first := httptest.NewRequest(http.MethodGet, "https://op.example.com/oauth/p1/authorize", nil)
+	first = first.WithContext(ContextWithTenant(first.Context(), "p1"))
+	second := httptest.NewRequest(http.MethodGet, "https://op.example.com/oauth/p2/authorize", nil)
+	second = second.WithContext(ContextWithTenant(second.Context(), "p2"))
+
+	assert.Equal(t, "https://op.example.com/oauth/p1", issuer(first))
+	assert.Equal(t, "https://op.example.com/oauth/p2", issuer(second))
+
+	// The host follows the request, including a forwarded one the outer
+	// router set on r.Host.
+	forwarded := httptest.NewRequest(http.MethodGet, "https://internal/oauth/p1/authorize", nil)
+	forwarded.Host = "op.example.com"
+	forwarded = forwarded.WithContext(ContextWithTenant(forwarded.Context(), "p1"))
+	assert.Equal(t, "https://op.example.com/oauth/p1", issuer(forwarded))
+}
+
 func TestIssuerFromForwardedOrHost(t *testing.T) {
 	type args struct {
 		path   string

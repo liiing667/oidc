@@ -153,6 +153,15 @@ func WithFallbackLogger(*slog.Logger) ServerOption {
 // route pattern reads as under a chi Mount, such as
 // "/oauth/{tenant}/authorize".
 //
+// An issuer function must derive the issuer from the tenant, otherwise
+// every tenant is served the same metadata and a tenant switch hands out
+// another issuer's endpoints. [IssuerFromPath] does this from the request
+// host and the tenant on the context; a fixed-path [IssuerFromHost] does
+// not. [RegisterLegacyServer] wires the [Provider]'s own issuer function
+// as the [IssuerInterceptor], so a [NewProvider] built with
+// [IssuerFromPath] keeps the discovery metadata of every tenant on the
+// tenant's own origin.
+//
 // For a [RegisterMetadataServer] handler with this option, with any
 // prefix including "", the issuer path must be exactly "{prefix}", for
 // the empty tenant, or "{prefix}/{tenant}"; any other issuer path, such as

@@ -139,6 +139,45 @@ func StaticIssuer(issuer string) func(bool) (IssuerFromRequest, error) {
 	}
 }
 
+// IssuerFromPath builds the issuer from the request host and the tenant
+// that [WithTenantPrefix] put on the request context. prefix is the same
+// static prefix handed to WithTenantPrefix: an issuer is
+// scheme://host{prefix} for the empty tenant and
+// scheme://host{prefix}/{tenant} otherwise. The scheme is https unless
+// the provider runs with the insecure option, in which case it is http.
+//
+// This keeps the host, the tenant and the issuer of one request on the
+// same origin. [IssuerFromHost] always appends one fixed path and cannot
+// do this: in a multi-tenant deployment every tenant would then be
+// served the metadata of the empty tenant, so a tenant switch would hand
+// out another issuer's endpoints.
+//
+// A missing leading slash and a trailing slash on prefix are tolerated,
+// so "oauth", "/oauth/" and "/oauth" are the same prefix and "" and "/"
+// name tenants directly under the host. Without a tenant on the context,
+// as on a handler without WithTenantPrefix or for the empty tenant, the
+// result is the issuer of the prefix, which makes the helper safe to use
+// for single-tenant deployments too. Use [StaticIssuer] for a custom
+// issuer that does not follow the request host.
+//
+// EXPERIMENTAL: may change until v4
+func IssuerFromPath(prefix string) func(bool) (IssuerFromRequest, error) {
+	prefix = normalizeTenantPrefix(prefix)
+	return func(allowInsecure bool) (IssuerFromRequest, error) {
+		scheme := "https"
+		if allowInsecure {
+			scheme = "http"
+		}
+		return func(r *http.Request) string {
+			issuer := scheme + "://" + r.Host + prefix
+			if tenant := TenantFromContext(r.Context()); tenant != "" {
+				issuer += "/" + tenant
+			}
+			return issuer
+		}, nil
+	}
+}
+
 func ValidateIssuer(issuer string, allowInsecure bool) error {
 	if issuer == "" {
 		return ErrInvalidIssuerNoIssuer

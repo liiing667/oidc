@@ -343,6 +343,57 @@ func TestMetadataHandler_issuerInterceptor(t *testing.T) {
 	}, decodeMetadataCall(t, rec))
 }
 
+// TestMetadataHandler_issuerFromPath aligns host, tenant and issuer on
+// every well-known URL form with the tenant aware [op.IssuerFromPath].
+func TestMetadataHandler_issuerFromPath(t *testing.T) {
+	issuerFromRequest, err := op.IssuerFromPath("/oauth")(false)
+	require.NoError(t, err)
+	issuerMW := op.NewIssuerInterceptor(issuerFromRequest).Handler
+
+	server := new(recordingMetadataServer)
+	meta := op.RegisterMetadataServer(server,
+		op.WithTenantPrefix("/oauth"),
+		op.WithHTTPMiddleware(issuerMW),
+	)
+
+	mux := http.NewServeMux()
+	mux.Handle("/.well-known/", meta)
+	mux.Handle("/oauth/{t}/.well-known/openid-configuration", meta)
+	mux.Handle("/oauth/.well-known/openid-configuration", meta)
+
+	want := metadataCall{IssuerPath: "/oauth/p1", Tenant: "p1", Issuer: "https://op.example.com/oauth/p1"}
+	for path, method := range map[string]string{
+		"/.well-known/oauth-authorization-server/oauth/p1": methodAS,
+		"/.well-known/openid-configuration/oauth/p1":       methodOpenID,
+		"/oauth/p1/.well-known/openid-configuration":       methodOpenID,
+	} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Host = "op.example.com"
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			want := want
+			want.Method = method
+			assert.Equal(t, want, decodeMetadataCall(t, rec))
+		})
+	}
+
+	t.Run("tenant switch changes the issuer", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration/oauth/p2", nil)
+		req.Host = "op.example.com"
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		assert.Equal(t, metadataCall{
+			Method:     methodOpenID,
+			IssuerPath: "/oauth/p2",
+			Tenant:     "p2",
+			Issuer:     "https://op.example.com/oauth/p2",
+		}, decodeMetadataCall(t, rec))
+	})
+}
+
 // recordingServer is a Server whose authorize endpoint records the tenant.
 type recordingServer struct {
 	op.UnimplementedServer

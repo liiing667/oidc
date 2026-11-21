@@ -244,6 +244,9 @@ func NewForwardedOpenIDProvider(path string, config *Config, storage Storage, op
 // NewProvider creates a provider with a router on it's embedded http.Handler.
 // Issuer is a function that must return the issuer on every request.
 // Typically [StaticIssuer], [IssuerFromHost] or [IssuerFromForwardedOrHost] can be used.
+// For a multi-tenant deployment behind [WithTenantPrefix], use [IssuerFromPath],
+// so the issuer follows the tenant of the request and every tenant's
+// metadata names its own endpoints.
 //
 // The router handles a suite of endpoints (some paths can be overridden):
 //
